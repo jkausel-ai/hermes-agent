@@ -1,0 +1,80 @@
+# Product Marketing Context
+
+Use this file as the first source of truth for the Hermes `__PROFILE_NAME__` marketing profile.
+
+## Company
+
+- Company name:
+- Website:
+- Primary contact:
+
+## Product
+
+- Product name:
+- One-sentence description:
+- Category:
+- Pricing model:
+- Current stage:
+
+## Audience
+
+- Primary ICP:
+- Secondary ICP:
+- Buyer:
+- User:
+- Main acquisition channels:
+
+## Problem / Outcome
+
+- Core problem:
+- Desired outcome:
+- Current alternatives:
+- Why customers switch:
+
+## Positioning
+
+- Category the product should own:
+- Core differentiators:
+- Proof points:
+- Objections:
+- Competitors:
+
+## Messaging
+
+- Main headline:
+- Supporting message pillars:
+- Words to use:
+- Words to avoid:
+- CTA vocabulary:
+
+## Funnel / GTM
+
+- Primary goal:
+- Secondary goal:
+- Current funnel:
+- Constraints:
+- Team / approvals:
+
+## Existing assets
+
+- Brand book:
+- Website copy:
+- Sales deck:
+- Customer research:
+- Analytics stack:
+- CRM / email stack:
+
+## Tool credentials available
+
+List only the tools the profile is allowed to operate with.
+
+- GA4:
+- Meta Ads:
+- Google Ads:
+- HubSpot:
+- Resend:
+- Buffer:
+
+## Notes
+
+- Anything Hermes should always remember for this workspace:
