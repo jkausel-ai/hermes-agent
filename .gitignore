@@ -58,3 +58,4 @@ mini-swe-agent/
 # Nix
 .direnv/
 result
+.DS_Store
