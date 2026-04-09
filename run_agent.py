@@ -412,7 +412,6 @@ def _strip_budget_warnings_from_history(messages: list) -> None:
 # Large tool result handler — save oversized output to temp file
 # =========================================================================
 
-
 # =========================================================================
 # Qwen Portal headers — mimics QwenCode CLI for portal.qwen.ai compatibility.
 # Extracted as a module-level helper so both __init__ and
@@ -432,7 +431,6 @@ def _qwen_portal_headers() -> dict:
         "X-DashScope-UserAgent": _ua,
         "X-DashScope-AuthType": "qwen-oauth",
     }
-
 
 class AIAgent:
     """
