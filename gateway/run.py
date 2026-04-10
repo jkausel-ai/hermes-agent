@@ -1792,6 +1792,19 @@ class GatewayRunner:
         """
         source = event.source
 
+        # ── Session Guardian: increment message counter ────────────────────
+        try:
+            import subprocess as _sp
+            _guardian = "/mnt/hermes-output/cochalet-skills/cochalet/pipeline/session_guardian.py"
+            _sp.Popen(
+                ["python3", _guardian, "--increment"],
+                stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                start_new_session=True
+            )
+        except Exception:
+            pass  # Non-blocking — guardian failure never affects message handling
+        # ──────────────────────────────────────────────────────────────────
+
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
         if getattr(event, "internal", False):
