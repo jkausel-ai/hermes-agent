@@ -5517,7 +5517,7 @@ class AIAgent:
                 preserve_dots=self._anthropic_preserve_dots(),
                 context_length=ctx_len,
                 base_url=getattr(self, "_anthropic_base_url", None),
-                fast_mode=self.request_overrides.get("speed") == "fast",
+                fast_mode=(self.request_overrides or {}).get("speed") == "fast",
             )
 
         if self.api_mode == "codex_responses":
@@ -7621,6 +7621,7 @@ class AIAgent:
 
             finish_reason = "stop"
             response = None  # Guard against UnboundLocalError if all retries fail
+            api_kwargs = None  # Guard against UnboundLocalError if _build_api_kwargs raises
 
             while retry_count < max_retries:
                 try:
