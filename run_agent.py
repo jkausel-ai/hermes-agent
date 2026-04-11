@@ -1029,7 +1029,6 @@ class AIAgent:
                 mem_config = _agent_cfg.get("memory", {})
                 self._memory_enabled = mem_config.get("memory_enabled", False)
                 self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
-                self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
                 self._memory_flush_min_turns = int(mem_config.get("flush_min_turns", 6))
                 if self._memory_enabled or self._user_profile_enabled:
                     from tools.memory_tool import MemoryStore
@@ -1038,9 +1037,17 @@ class AIAgent:
                         user_char_limit=mem_config.get("user_char_limit", 1375),
                     )
                     self._memory_store.load_from_disk()
-            except Exception:
+            except Exception as e:
+                import sys
+                print(f"CRITICAL: Failed to initialize MemoryStore: {e}", file=sys.stderr)
+                print(f"CRITICAL: Exception type: {type(e)}", file=sys.stderr)
+                if hasattr(e, '__traceback__'):
+                    import traceback
+                    traceback.print_exception(type(e), e, e.__traceback__, file=sys.stderr)
+                self._memory_store = None
                 pass  # Memory is optional -- don't break agent init
         
+        # Memory provider
 
 
         # Memory provider plugin (external — one at a time, alongside built-in)

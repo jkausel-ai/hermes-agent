@@ -1792,6 +1792,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             description=schema["description"],
         )
         registered_names.append(tool_name_prefixed)
+        logger.debug("MCP server '%s': Registered tool '%s' from MCP tool '%s'", name, tool_name_prefixed, mcp_tool.name)
 
     # Register MCP Resources & Prompts utility tools, filtered by config and
     # only when the server actually supports the corresponding capability.
