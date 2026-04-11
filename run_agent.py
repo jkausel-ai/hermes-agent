@@ -518,6 +518,7 @@ def _qwen_portal_headers() -> dict:
     }
 
 class AIAgent:
+    _execution_thread_id: int | None = None
     """
     AI Agent with tool calling capabilities.
 
@@ -586,7 +587,6 @@ class AIAgent:
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
         user_id: str = None,
-        _execution_thread_id: str = None,
         skip_context_files: bool = False,
         skip_memory: bool = False,
         session_db=None,
@@ -598,7 +598,6 @@ class AIAgent:
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
         persist_session: bool = True,
-        _execution_thread_id: str = None,
     ):
         """
         Initialize the AI Agent.
@@ -665,7 +664,6 @@ class AIAgent:
         self._credential_pool = credential_pool
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
-        self._execution_thread_id = _execution_thread_id # Added by upstream merge 2026-04-11
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
         self.base_url = base_url or ""
         provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
