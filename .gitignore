@@ -44,6 +44,7 @@ dmypy.json
 # Editor stuff
 /.idea
 /.DS_Store
+node_modules/
 *.swp
 *.~
 .envrc
