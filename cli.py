@@ -1603,8 +1603,8 @@ _skill_commands = scan_skill_commands()
 def _get_plugin_cmd_handler_names() -> set:
     """Return plugin command names (without slash prefix) for dispatch matching."""
     try:
-        from hermes_cli.plugins import get_plugin_manager
-        return set(get_plugin_manager()._plugin_commands.keys())
+        from hermes_cli.plugins import get_plugin_commands
+        return set(get_plugin_commands().keys())
     except Exception:
         return set()
 
@@ -5757,6 +5757,8 @@ class HermesCLI:
         Returns:
             bool: True to continue, False to exit
         """
+        global CLI_CONFIG, _skill_commands
+
         # Lowercase only for dispatch matching; preserve original case for arguments
         cmd_lower = command.lower().strip()
         cmd_original = command.strip()
@@ -5963,6 +5965,50 @@ class HermesCLI:
             from hermes_cli.config import reload_env
             count = reload_env()
             print(f"  Reloaded .env ({count} var(s) updated)")
+        elif canonical == "reload-config":
+            from hermes_cli.config import load_config
+            from agent.skill_commands import scan_skill_commands
+
+            self.config = load_config()
+            CLI_CONFIG = self.config
+            _skill_commands = scan_skill_commands()
+            model_cfg = self.config.get("model", {}) if isinstance(self.config, dict) else {}
+            if not isinstance(model_cfg, dict):
+                model_cfg = {"default": str(model_cfg or "")}
+            new_model = (model_cfg.get("default") or model_cfg.get("model") or self.model or "").strip()
+            new_provider = (model_cfg.get("provider") or self.requested_provider or "auto").strip()
+            new_base_url = (model_cfg.get("base_url") or "").strip()
+            old_model = self.model
+            old_provider = self.provider
+            self.model = new_model or self.model
+            self.requested_provider = new_provider or self.requested_provider
+            self.provider = self.requested_provider
+            self.base_url = new_base_url or self.base_url
+            self._explicit_base_url = new_base_url or None
+            self._explicit_api_key = None
+            runtime_ready = self._ensure_runtime_credentials()
+            if runtime_ready and self.agent is not None:
+                try:
+                    self.agent.switch_model(
+                        new_model=self.model,
+                        new_provider=self.provider,
+                        api_key=self.api_key,
+                        base_url=self.base_url,
+                        api_mode=self.api_mode,
+                    )
+                except Exception as exc:
+                    self._console_print(f"[yellow]Config reloaded, but live agent model swap failed: {exc}[/]")
+            quick_commands = (self.config or {}).get("quick_commands", {}) or {}
+            self._console_print(
+                "  Reloaded config.yaml "
+                f"({len(quick_commands)} quick command(s), {len(_skill_commands)} skill command(s); "
+                f"model {old_provider}/{old_model} → {self.provider}/{self.model})"
+            )
+        elif canonical == "restart-cli":
+            self._console_print(
+                "  To restart this terminal CLI session: type /quit, then run hermes again. "
+                "For config or skill changes, /reload-config is usually enough."
+            )
         elif canonical == "reload-mcp":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._reload_mcp()

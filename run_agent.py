@@ -3269,6 +3269,13 @@ class AIAgent:
                 except (TypeError, ValueError):
                     pass
 
+        attr_retry_after = getattr(error, "retry_after", None)
+        if attr_retry_after not in (None, "") and "reset_at" not in context:
+            try:
+                context["reset_at"] = time.time() + float(attr_retry_after)
+            except (TypeError, ValueError):
+                pass
+
         response = getattr(error, "response", None)
         headers = getattr(response, "headers", None)
         if headers:
@@ -3297,7 +3304,7 @@ class AIAgent:
                     context["reset_at"] = time.time() + seconds
                 else:
                     sec_match = re.search(
-                        r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)",
+                        r"(?:retry(?:ing)?(?:\s+after|\s+in)?|retry\s+suggested\s+in|reset(?:s|ting)?\s+after|quota\s+will\s+reset\s+after)\s+(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)",
                         message,
                         re.IGNORECASE,
                     )
@@ -5134,6 +5141,21 @@ class AIAgent:
                 return True, False
 
         return False, has_retried_429
+
+    def _credential_pool_may_recover_rate_limit(self) -> bool:
+        """Whether a rate-limit retry should wait for same-provider credentials."""
+        pool = self._credential_pool
+        if pool is None:
+            return False
+        if (
+            self.provider == "google-gemini-cli"
+            or str(getattr(self, "base_url", "")).startswith("cloudcode-pa://")
+        ):
+            # CloudCode/Gemini quota windows are usually account-level throttles.
+            # Prefer the configured fallback immediately instead of waiting out
+            # Retry-After while a pooled OAuth credential may still appear usable.
+            return False
+        return pool.has_available()
 
     def _anthropic_messages_create(self, api_kwargs: dict):
         if self.api_mode == "anthropic_messages":
@@ -10276,8 +10298,7 @@ class AIAgent:
                         # still recover.  The pool's retry-then-rotate cycle needs
                         # at least one more attempt to fire — jumping to a fallback
                         # provider here short-circuits it.
-                        pool = self._credential_pool
-                        pool_may_recover = pool is not None and pool.has_available()
+                        pool_may_recover = self._credential_pool_may_recover_rate_limit()
                         if not pool_may_recover:
                             self._emit_status("⚠️ Rate limited — switching to fallback provider...")
                             if self._try_activate_fallback():
@@ -10674,18 +10695,34 @@ class AIAgent:
                             "error": _final_summary,
                         }
 
-                    # For rate limits, respect the Retry-After header if present
+                    # For rate limits, respect provider reset hints before generic backoff.
                     _retry_after = None
                     if is_rate_limited:
+                        _attr_retry_after = getattr(api_error, "retry_after", None)
+                        if _attr_retry_after not in (None, ""):
+                            try:
+                                _retry_after = min(float(_attr_retry_after), 120.0)
+                            except (TypeError, ValueError):
+                                _retry_after = None
+
                         _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
-                        if _resp_headers and hasattr(_resp_headers, "get"):
+                        if _retry_after is None and _resp_headers and hasattr(_resp_headers, "get"):
                             _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
                             if _ra_raw:
                                 try:
-                                    _retry_after = min(int(_ra_raw), 120)  # Cap at 2 minutes
+                                    _retry_after = min(float(_ra_raw), 120.0)  # Cap at 2 minutes
                                 except (TypeError, ValueError):
                                     pass
-                    wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+
+                        if _retry_after is None:
+                            _reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
+                            try:
+                                if _reset_at not in (None, ""):
+                                    _retry_after = min(max(float(_reset_at) - time.time(), 0.0), 120.0)
+                            except (TypeError, ValueError):
+                                _retry_after = None
+
+                    wait_time = _retry_after if _retry_after is not None else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                     if is_rate_limited:
                         self._emit_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
                     else:

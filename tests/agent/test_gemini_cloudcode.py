@@ -912,6 +912,25 @@ class TestTranslateStreamEvent:
         )
         assert chunks[-1].choices[0].finish_reason == "tool_calls"
 
+    def test_non_text_chunks_expose_content_attribute(self):
+        from agent.gemini_cloudcode_adapter import _translate_stream_event
+
+        counter = [0]
+        chunks = _translate_stream_event(
+            {"response": {"candidates": [{
+                "content": {"parts": [{"functionCall": {"name": "x", "args": {}}}]},
+                "finishReason": "STOP",
+            }]}},
+            model="m",
+            tool_call_counter=counter,
+        )
+
+        assert chunks
+        for chunk in chunks:
+            delta = chunk.choices[0].delta
+            assert hasattr(delta, "content")
+            assert delta.content is None
+
 
 class TestGeminiCloudCodeClient:
     def test_client_exposes_openai_interface(self):

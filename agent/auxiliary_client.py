@@ -1591,6 +1591,47 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
 
+    # ── Google Gemini CLI OAuth / Code Assist ───────────────────────
+    if provider == "google-gemini-cli":
+        try:
+            from hermes_cli.auth import (
+                DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
+                resolve_gemini_oauth_runtime_credentials,
+            )
+            from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+        except ImportError as exc:
+            logger.warning(
+                "resolve_provider_client: google-gemini-cli unavailable: %s",
+                exc,
+            )
+            return None, None
+        try:
+            creds = resolve_gemini_oauth_runtime_credentials()
+        except Exception as exc:
+            logger.warning(
+                "resolve_provider_client: google-gemini-cli requested "
+                "but OAuth credentials are unavailable (%s)",
+                exc,
+            )
+            return None, None
+
+        final_model = _normalize_resolved_model(
+            model or _read_main_model() or "gemini-2.5-flash",
+            provider,
+        )
+        base_url = (
+            (explicit_base_url or "").strip()
+            or str(creds.get("base_url") or "").strip()
+            or DEFAULT_GEMINI_CLOUDCODE_BASE_URL
+        )
+        client = GeminiCloudCodeClient(
+            api_key=str(creds.get("api_key") or "google-oauth"),
+            base_url=base_url,
+            project_id=str(creds.get("project_id") or ""),
+        )
+        logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+        return (client, final_model)
+
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         if explicit_base_url:
