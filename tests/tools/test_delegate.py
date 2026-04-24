@@ -255,7 +255,8 @@ class TestDelegateTask(unittest.TestCase):
             }
             MockAgent.return_value = mock_child
 
-            delegate_task(goal="Test runtime inheritance", parent_agent=parent)
+            with patch("tools.delegate_tool._load_config", return_value={}):
+                delegate_task(goal="Test runtime inheritance", parent_agent=parent)
 
             _, kwargs = MockAgent.call_args
             self.assertEqual(kwargs["base_url"], parent.base_url)

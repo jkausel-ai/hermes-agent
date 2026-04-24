@@ -449,6 +449,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int | None = None, task_id
         # instead of re-sending the same content.  Saves context tokens.
         resolved_str = str(_resolved)
         dedup_key = (resolved_str, offset, limit)
+        dedup_warning_count = None
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0,
@@ -460,7 +461,30 @@ def read_file_tool(path: str, offset: int = 1, limit: int | None = None, task_id
             try:
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime:
-                    return json.dumps({
+                    with _read_tracker_lock:
+                        if "dedup" not in task_data:
+                            task_data["dedup"] = {}
+                        task_data["read_history"].add((path, offset, limit))
+                        if task_data["last_key"] == ("read", path, offset, limit):
+                            task_data["consecutive"] += 1
+                        else:
+                            task_data["last_key"] = ("read", path, offset, limit)
+                            task_data["consecutive"] = 1
+                        count = task_data["consecutive"]
+                        task_data["dedup"][dedup_key] = current_mtime
+                        task_data.setdefault("read_timestamps", {})[resolved_str] = current_mtime
+                        _cap_read_tracker_data(task_data)
+                    if count >= 4:
+                        return json.dumps({
+                            "error": (
+                                f"BLOCKED: You have read this exact file region {count} times in a row. "
+                                "The content has NOT changed. You already have this information. "
+                                "STOP re-reading and proceed with your task."
+                            ),
+                            "path": path,
+                            "already_read": count,
+                        }, ensure_ascii=False)
+                    dedup_result = {
                         "content": (
                             "File unchanged since last read. The content from "
                             "the earlier read_file result in this conversation is "
@@ -468,7 +492,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int | None = None, task_id
                         ),
                         "path": path,
                         "dedup": True,
-                    }, ensure_ascii=False)
+                    }
+                    if count >= 3:
+                        dedup_warning_count = count
+                    else:
+                        return json.dumps(dedup_result, ensure_ascii=False)
             except OSError:
                 pass  # stat failed — fall through to full read
 
@@ -519,32 +547,35 @@ def read_file_tool(path: str, offset: int = 1, limit: int | None = None, task_id
 
         # ── Track for consecutive-loop detection ──────────────────────
         read_key = ("read", path, offset, limit)
-        with _read_tracker_lock:
-            # Ensure "dedup" key exists (backward compat with old tracker state)
-            if "dedup" not in task_data:
-                task_data["dedup"] = {}
-            task_data["read_history"].add((path, offset, limit))
-            if task_data["last_key"] == read_key:
-                task_data["consecutive"] += 1
-            else:
-                task_data["last_key"] = read_key
-                task_data["consecutive"] = 1
-            count = task_data["consecutive"]
+        if dedup_warning_count is not None:
+            count = dedup_warning_count
+        else:
+            with _read_tracker_lock:
+                # Ensure "dedup" key exists (backward compat with old tracker state)
+                if "dedup" not in task_data:
+                    task_data["dedup"] = {}
+                task_data["read_history"].add((path, offset, limit))
+                if task_data["last_key"] == read_key:
+                    task_data["consecutive"] += 1
+                else:
+                    task_data["last_key"] = read_key
+                    task_data["consecutive"] = 1
+                count = task_data["consecutive"]
 
-            # Store mtime at read time for two purposes:
-            # 1. Dedup: skip identical re-reads of unchanged files.
-            # 2. Staleness: warn on write/patch if the file changed since
-            #    the agent last read it (external edit, concurrent agent, etc.).
-            try:
-                _mtime_now = os.path.getmtime(resolved_str)
-                task_data["dedup"][dedup_key] = _mtime_now
-                task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
-            except OSError:
-                pass  # Can't stat — skip tracking for this entry
+                # Store mtime at read time for two purposes:
+                # 1. Dedup: skip identical re-reads of unchanged files.
+                # 2. Staleness: warn on write/patch if the file changed since
+                #    the agent last read it (external edit, concurrent agent, etc.).
+                try:
+                    _mtime_now = os.path.getmtime(resolved_str)
+                    task_data["dedup"][dedup_key] = _mtime_now
+                    task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+                except OSError:
+                    pass  # Can't stat — skip tracking for this entry
 
-            # Bound the per-task containers so a long CLI session doesn't
-            # accumulate megabytes of dict/set state.  See _cap_read_tracker_data.
-            _cap_read_tracker_data(task_data)
+                # Bound the per-task containers so a long CLI session doesn't
+                # accumulate megabytes of dict/set state.  See _cap_read_tracker_data.
+                _cap_read_tracker_data(task_data)
 
         # Cross-agent file-state registry (separate from per-task read
         # tracker above): records that THIS agent has read this path so

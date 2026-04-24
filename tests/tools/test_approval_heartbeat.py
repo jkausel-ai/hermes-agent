@@ -63,6 +63,7 @@ class TestApprovalHeartbeat:
         """touch_activity_if_due is called repeatedly during the wait."""
         from tools.approval import (
             check_all_command_guards,
+            has_blocking_approval,
             register_gateway_notify,
             resolve_gateway_approval,
         )
@@ -131,6 +132,7 @@ class TestApprovalHeartbeat:
         """Polling slices don't delay responsiveness — resolve is near-instant."""
         from tools.approval import (
             check_all_command_guards,
+            has_blocking_approval,
             register_gateway_notify,
             resolve_gateway_approval,
         )
@@ -148,9 +150,15 @@ class TestApprovalHeartbeat:
         thread = threading.Thread(target=_run_check, daemon=True)
         thread.start()
 
-        # Resolve almost immediately — the wait loop should return within
-        # its current 1s poll slice.
-        time.sleep(0.1)
+        # Resolve as soon as the approval is actually queued. A fixed sleep
+        # races thread startup on loaded machines and can resolve zero pending
+        # approvals before check_all_command_guards reaches the blocking wait.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if has_blocking_approval(self.SESSION_KEY):
+                break
+            time.sleep(0.01)
+        assert has_blocking_approval(self.SESSION_KEY)
         resolve_gateway_approval(self.SESSION_KEY, "once")
         thread.join(timeout=5)
         elapsed = time.monotonic() - start_time
