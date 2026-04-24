@@ -5327,6 +5327,185 @@ class GatewayRunner:
         if page != requested_page:
             lines.append(f"_(Requested page {requested_page} was out of range, showing page {page}.)_")
         return "\n".join(lines)
+
+    async def _handle_mode_command(self, event: MessageEvent) -> str:
+        """Handle SPEC-C /mode shortcuts using Hermes session model overrides."""
+        from datetime import datetime, timezone
+        import json
+        import os
+        import re
+
+        raw_args = event.get_command_args().strip()
+        requested = (raw_args.split(None, 1)[0].lower() if raw_args else "status")
+        session_key = self._session_key_for_source(event.source)
+        override = self._session_model_overrides.get(session_key, {})
+
+        config_model = "kimi-k2.6:cloud"
+        config_provider = "custom"
+        config_base_url = "http://127.0.0.1:11434/v1"
+        config_api_key = "ollama"
+        try:
+            import yaml
+            config_path = _hermes_home / "config.yaml"
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict):
+                    config_model = model_cfg.get("default") or config_model
+                    config_provider = model_cfg.get("provider") or config_provider
+                    config_base_url = model_cfg.get("base_url") or config_base_url
+                    config_api_key = model_cfg.get("api_key") or config_api_key
+        except Exception:
+            pass
+
+        active_model = override.get("model", config_model)
+        active_provider = override.get("provider", config_provider)
+        active_mode = override.get("mode", "plan" if active_model == "kimi-k2.6:cloud" else "custom")
+
+        def dotenv_value(name: str) -> str:
+            val = os.environ.get(name, "")
+            if val:
+                return val
+            env_path = _hermes_home / ".env"
+            try:
+                if env_path.exists():
+                    for line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                        if line.startswith(name + "="):
+                            return line.split("=", 1)[1].strip().strip('"').strip("'")
+            except Exception:
+                return ""
+            return ""
+
+        if requested in ("", "status"):
+            return "\n".join([
+                "HERMES_MODE_ROUTER",
+                f"Active mode: {active_mode}",
+                f"Route: {active_model} via {active_provider}",
+                "Available: /mode cheap, /mode plan, /mode code, /mode default, /mode status",
+                "Deferred: /mode max",
+                "Scope: session only; hermes.toml/config.yaml not mutated.",
+            ])
+
+        if requested == "max":
+            return "Max mode deferred — use `/mode code` for high-correctness work. Re-enabling pending telemetry review."
+
+        routes = {
+            "cheap": {
+                "mode": "cheap",
+                "model": "meta-llama/llama-3.3-70b-instruct:free",
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": dotenv_value("OPENROUTER_API_KEY"),
+                "api_mode": "chat_completions",
+            },
+            "plan": {
+                "mode": "plan",
+                "model": "kimi-k2.6:cloud",
+                "provider": "custom",
+                "base_url": "http://127.0.0.1:11434/v1",
+                "api_key": "ollama",
+                "api_mode": "chat_completions",
+            },
+            "default": {
+                "mode": "plan",
+                "model": "kimi-k2.6:cloud",
+                "provider": "custom",
+                "base_url": "http://127.0.0.1:11434/v1",
+                "api_key": "ollama",
+                "api_mode": "chat_completions",
+            },
+            "code": {
+                "mode": "code",
+                "model": "anthropic/claude-sonnet-4.6",
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": dotenv_value("OPENROUTER_API_KEY"),
+                "api_mode": "chat_completions",
+            },
+        }
+        if requested not in routes:
+            return "Unknown mode. Use `/mode cheap`, `/mode plan`, `/mode code`, `/mode default`, or `/mode status`."
+
+        trailing_prompt = raw_args.split(None, 1)[1] if len(raw_args.split(None, 1)) > 1 else ""
+        if requested == "cheap" and re.search(
+            r"\b(legal|lawyer|counsel|securities|financial|investor|investment|equity|offering|"
+            r"returns|noi|irr|mnda|publish[- ]ready|direct offer|payments?)\b",
+            trailing_prompt,
+            re.IGNORECASE,
+        ):
+            return "Refusing in cheap mode — use `/mode plan` or `/mode code`."
+
+        route = routes[requested]
+        if route["provider"] == "openrouter" and not route["api_key"]:
+            return f"Mode `{requested}` is unavailable: OpenRouter API key is not loaded. Staying in `{active_mode}`."
+
+        cached_entry = None
+        cache_lock = getattr(self, "_agent_cache_lock", None)
+        cache = getattr(self, "_agent_cache", None)
+        if cache_lock and cache is not None:
+            with cache_lock:
+                cached_entry = cache.get(session_key)
+        if requested == "code" and cached_entry and cached_entry[0] is not None:
+            current_cost = float(getattr(cached_entry[0], "session_estimated_cost_usd", 0.0) or 0.0)
+            if current_cost >= 5.0:
+                return "Code mode hard cap already reached for this session; staying in plan mode."
+
+        if cached_entry and cached_entry[0] is not None:
+            try:
+                cached_entry[0].switch_model(
+                    new_model=route["model"],
+                    new_provider=route["provider"],
+                    api_key=route["api_key"],
+                    base_url=route["base_url"],
+                    api_mode=route["api_mode"],
+                )
+            except Exception as exc:
+                logger.warning("SPEC-C /mode in-place switch failed: %s", exc)
+
+        self._session_model_overrides[session_key] = route.copy()
+        if not hasattr(self, "_pending_model_notes"):
+            self._pending_model_notes = {}
+        self._pending_model_notes[session_key] = (
+            f"[Note: SPEC-C mode switched from {active_mode} to {route['mode']} "
+            f"({route['model']} via {route['provider']}). "
+            "This is session-scoped and did not mutate persistent config.]"
+        )
+        self._evict_cached_agent(session_key)
+
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        session_id = session_key
+        try:
+            entry = self.session_store._entries.get(session_key)
+            session_id = getattr(entry, "session_id", None) or session_key
+        except Exception:
+            pass
+        interface = getattr(event.source, "platform", "") or "gateway"
+        if hasattr(interface, "value"):
+            interface = interface.value
+        record = {
+            "ts": stamp,
+            "session_id": session_id,
+            "interface": str(interface),
+            "actor": getattr(event.source, "user_id", "") or "gateway-user",
+            "from_mode": active_mode,
+            "to_mode": route["mode"],
+            "reason": "SPEC-C /mode command",
+            "session_scope_id": session_key,
+        }
+        try:
+            ledger = Path("/mnt/hermes-output/memory/mode-switches.jsonl")
+            ledger.parent.mkdir(parents=True, exist_ok=True)
+            with ledger.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record, sort_keys=True) + "\n")
+        except Exception as exc:
+            logger.warning("SPEC-C /mode telemetry write failed: %s", exc)
+
+        return "\n".join([
+            f"Mode switched to `{route['mode']}`",
+            f"Route: `{route['model']}` via `{route['provider']}`",
+            "Scope: session only; persistent config not changed.",
+        ])
     
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model for this session.

@@ -5243,15 +5243,163 @@ class HermesCLI:
         else:
             _cprint("    (session only — add --global to persist)")
 
+    def _spec_c_dotenv_value(self, name: str) -> str:
+        value = os.environ.get(name, "")
+        if value:
+            return value
+        env_path = _hermes_home / ".env"
+        try:
+            if env_path.exists():
+                for line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    if line.startswith(name + "="):
+                        return line.split("=", 1)[1].strip().strip('"').strip("'")
+        except Exception:
+            return ""
+        return ""
+
+    def _spec_c_write_mode_telemetry(self, from_mode: str, to_mode: str) -> None:
+        record = {
+            "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "session_id": self.session_id or "cli",
+            "interface": "cli",
+            "actor": "hermes-cli",
+            "from_mode": from_mode,
+            "to_mode": to_mode,
+            "reason": "SPEC-C /mode command",
+            "session_scope_id": f"cli:{self.session_id or 'cli'}",
+        }
+        try:
+            ledger = Path("/mnt/hermes-output/memory/mode-switches.jsonl")
+            ledger.parent.mkdir(parents=True, exist_ok=True)
+            with ledger.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, sort_keys=True) + "\n")
+        except Exception as exc:
+            logger.warning("SPEC-C /mode telemetry write failed: %s", exc)
+
+    def _handle_mode_switch(self, cmd_original: str) -> None:
+        """Handle SPEC-C /mode shortcuts without mutating persistent config."""
+        parts = cmd_original.split(None, 1)
+        raw_args = parts[1].strip() if len(parts) > 1 else ""
+        requested = (raw_args.split(None, 1)[0].lower() if raw_args else "status")
+        active_model = self.model or "unknown"
+        active_provider = self.provider or self.requested_provider or "unknown"
+        active_mode = "plan" if active_model == "kimi-k2.6:cloud" else "custom"
+
+        if requested in ("", "status"):
+            _cprint("  HERMES_MODE_ROUTER")
+            _cprint(f"  Active mode: {active_mode}")
+            _cprint(f"  Route: {active_model} via {active_provider}")
+            _cprint("  Available: /mode cheap, /mode plan, /mode code, /mode default, /mode status")
+            _cprint("  Deferred: /mode max")
+            _cprint("  Scope: session only; config.yaml not mutated.")
+            return
+
+        if requested == "max":
+            _cprint("  Max mode deferred — use `/mode code` for high-correctness work. Re-enabling pending telemetry review.")
+            return
+
+        routes = {
+            "cheap": {
+                "mode": "cheap",
+                "model": "meta-llama/llama-3.3-70b-instruct:free",
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": self._spec_c_dotenv_value("OPENROUTER_API_KEY"),
+                "api_mode": "chat_completions",
+            },
+            "plan": {
+                "mode": "plan",
+                "model": "kimi-k2.6:cloud",
+                "provider": "custom",
+                "base_url": "http://127.0.0.1:11434/v1",
+                "api_key": "ollama",
+                "api_mode": "chat_completions",
+            },
+            "default": {
+                "mode": "plan",
+                "model": "kimi-k2.6:cloud",
+                "provider": "custom",
+                "base_url": "http://127.0.0.1:11434/v1",
+                "api_key": "ollama",
+                "api_mode": "chat_completions",
+            },
+            "code": {
+                "mode": "code",
+                "model": "anthropic/claude-sonnet-4.6",
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": self._spec_c_dotenv_value("OPENROUTER_API_KEY"),
+                "api_mode": "chat_completions",
+            },
+        }
+        if requested not in routes:
+            _cprint("  Unknown mode. Use /mode cheap, /mode plan, /mode code, /mode default, or /mode status.")
+            return
+
+        trailing_prompt = raw_args.split(None, 1)[1] if len(raw_args.split(None, 1)) > 1 else ""
+        if requested == "cheap" and re.search(
+            r"\b(legal|lawyer|counsel|securit(?:y|ies)|financial|finance|investor|investment|equity|"
+            r"offering|prospectus|mn?da|publish[- ]ready|ready to publish|approved copy|"
+            r"external distribution|public distribution|direct offer|payments?)\b",
+            trailing_prompt,
+            re.IGNORECASE,
+        ):
+            _cprint("  Refusing in cheap mode — use `/mode plan` or `/mode code`.")
+            return
+
+        route = routes[requested]
+        if route["provider"] == "openrouter" and not route["api_key"]:
+            _cprint(f"  Mode `{requested}` is unavailable: OpenRouter API key is not loaded. Staying in `{active_mode}`.")
+            return
+
+        if requested == "code" and self.agent is not None:
+            current_cost = float(getattr(self.agent, "session_estimated_cost_usd", 0.0) or 0.0)
+            if current_cost >= 5.0:
+                _cprint("  Code mode hard cap already reached for this session; staying in plan mode.")
+                return
+
+        old_model = self.model
+        self.model = route["model"]
+        self.provider = route["provider"]
+        self.requested_provider = route["provider"]
+        self.api_key = route["api_key"]
+        self._explicit_api_key = route["api_key"]
+        self.base_url = route["base_url"]
+        self._explicit_base_url = route["base_url"]
+        self.api_mode = route["api_mode"]
+
+        if self.agent is not None:
+            try:
+                self.agent.switch_model(
+                    new_model=route["model"],
+                    new_provider=route["provider"],
+                    api_key=route["api_key"],
+                    base_url=route["base_url"],
+                    api_mode=route["api_mode"],
+                )
+            except Exception as exc:
+                _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
+
+        self._pending_model_switch_note = (
+            f"[Note: SPEC-C mode switched from {active_mode} to {route['mode']} "
+            f"({old_model} -> {route['model']} via {route['provider']}). "
+            "This is session-scoped and did not mutate persistent config.]"
+        )
+        self._spec_c_write_mode_telemetry(active_mode, route["mode"])
+
+        _cprint(f"  ✓ Mode switched to {route['mode']}")
+        _cprint(f"    Route: {route['model']} via {route['provider']}")
+        _cprint("    Scope: session only; persistent config not changed.")
+
     def _should_handle_model_command_inline(self, text: str, has_images: bool = False) -> bool:
-        """Return True when /model should be handled immediately on the UI thread."""
+        """Return True when model-route commands should run immediately on the UI thread."""
         if not text or has_images or not _looks_like_slash_command(text):
             return False
         try:
             from hermes_cli.commands import resolve_command
             base = text.split(None, 1)[0].lower().lstrip('/')
             cmd = resolve_command(base)
-            return bool(cmd and cmd.name == "model")
+            return bool(cmd and cmd.name in {"model", "mode"})
         except Exception:
             return False
 
@@ -5905,6 +6053,8 @@ class HermesCLI:
             self._handle_resume_command(cmd_original)
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
+        elif canonical == "mode":
+            self._handle_mode_switch(cmd_original)
         elif canonical == "provider":
             self._show_model_and_providers()
         elif canonical == "gquota":
